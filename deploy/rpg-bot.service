@@ -1,0 +1,19 @@
+[Unit]
+Description=Интендант — Telegram-бот клан-чата Raid
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=brzhkv
+WorkingDirectory=/home/brzhkv/Custom/rpg
+ExecStart=/home/brzhkv/Custom/rpg/.venv/bin/python -m bot.main
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+# .env читает сам bot/config.py через python-dotenv
+
+[Install]
+WantedBy=multi-user.target
