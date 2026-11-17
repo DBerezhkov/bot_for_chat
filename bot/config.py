@@ -63,6 +63,5 @@ LEVEL_DEF_EVERY = 2  # +1 защиты на каждом чётном уровн
 # Ключ: aistudio.google.com → Get API key.
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-flash-lite-latest").strip()
-# Лимиты держат запросы в бесплатной квоте и не дают одному шутнику съесть её всю.
-AI_PER_USER_DAY = int(os.getenv("AI_PER_USER_DAY", "15"))
+# Общий дневной лимит ответов на чат держит запросы в бесплатной квоте.
 AI_PER_CHAT_DAY = int(os.getenv("AI_PER_CHAT_DAY", "200"))

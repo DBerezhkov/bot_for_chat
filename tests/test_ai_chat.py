@@ -49,7 +49,6 @@ class FakeBot:
 def fresh_state(monkeypatch):
     ai_chat._used.clear()
     ai_chat._history.clear()
-    monkeypatch.setattr(config, "AI_PER_USER_DAY", 2)
     monkeypatch.setattr(config, "AI_PER_CHAT_DAY", 3)
 
 
@@ -67,12 +66,17 @@ async def test_addressed_to_me(text, reply, hit):
     assert await ai_chat.addressed_to_me(Msg(text, reply_to_bot=reply), FakeBot()) is hit
 
 
-def test_quota_per_user_and_chat():
-    assert ai_chat.take_quota(-1, 1) is None
-    assert ai_chat.take_quota(-1, 1) is None
-    assert "наговорился" in ai_chat.take_quota(-1, 1)
-    assert ai_chat.take_quota(-1, 2) is None
-    assert "охрип" in ai_chat.take_quota(-1, 3)
+def test_quota_only_per_chat():
+    # Один и тот же человек может выбрать весь лимит чата — личного лимита нет.
+    for _ in range(3):
+        assert ai_chat.take_quota(-1) is None
+    assert "охрип" in ai_chat.take_quota(-1)
+    assert ai_chat.take_quota(-2) is None, "лимит у каждого чата свой"
+
+
+def test_persona_loaded_from_file():
+    assert ai_chat.PERSONA.startswith("Ты — Интендант")
+    assert "Простой текст." in ai_chat.PERSONA
 
 
 def test_prompt_contains_recent_history():
@@ -111,7 +115,7 @@ async def test_gemini_failure_refunds_quota(monkeypatch):
         msg = Msg("Бот?")
         await ai_chat.chat(msg, FakeBot())
         assert "задумался" in msg.replies[0]
-    assert ai_chat.take_quota(Chat.id, 1) is None, "сбой Gemini не должен съедать лимит"
+    assert ai_chat.take_quota(Chat.id) is None, "сбой Gemini не должен съедать лимит"
 
 
 async def test_chat_log_skips_commands():

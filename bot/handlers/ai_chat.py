@@ -18,6 +18,7 @@ from aiogram.enums import ChatAction
 from aiogram.types import Message, TelegramObject
 
 from bot import config, db
+from bot.content.loader import CONTENT_DIR
 from bot.services import ai
 
 log = logging.getLogger(__name__)
@@ -26,21 +27,8 @@ router = Router(name="ai_chat")
 HISTORY = 30          # сколько последних сообщений чата видит модель
 MAX_REPLY = 1500      # обрезка на случай, если модель разговорится
 
-PERSONA = """Ты — Интендант, бот клан-чата игры Raid: Shadow Legends. Ворчливый, \
-остроумный квартирмейстер вольного отряда наёмников: ведёшь учёт людей и \
-припасов, подкалываешь, но по-доброму и за своих горой.
-
-Правила:
-- Отвечай по-русски, коротко: 1–3 предложения, максимум 4. Это чат, не лекция.
-- Юмор — сухой и ироничный. Можно беззлобно подколоть собеседника.
-- Без мата, пошлости, политики, религии и оскорблений по нации, полу, внешности.
-- Род собеседника бери из имени, только если он очевиден (Оля, Дмитрий). \
-Если имя неоднозначное (Саша, Женя) или это ник — пиши без родовых окончаний \
-(«тут не поспоришь» вместо «ты прав»).
-- Не выдумывай факты о людях из чата и об их аккаунтах в игре.
-- В Raid разбираешься, но если не уверен в цифрах или мете — так и скажи.
-- Если просят сделать что-то вредное или противное правилам — отшутись.
-- Никакой разметки: ни звёздочек, ни решёток, ни списков. Простой текст."""
+# Характер и правила собеседника — в отдельном файле, правится без кода.
+PERSONA = (CONTENT_DIR / "persona.txt").read_text(encoding="utf-8").strip()
 
 
 # --- Память чата -----------------------------------------------------------
@@ -71,26 +59,25 @@ class ChatLog(BaseMiddleware):
 
 # --- Лимиты ----------------------------------------------------------------
 
-_used: Counter = Counter()  # (день, «user»/«chat», id) → ответов
+_used: Counter = Counter()  # (день, id чата) → ответов
 
 
-def take_quota(chat_id: int, user_id: int) -> str | None:
-    """Списывает один ответ. Возвращает причину отказа или None, если можно."""
-    day = db._today()
-    if _used[(day, "chat", chat_id)] >= config.AI_PER_CHAT_DAY:
+def take_quota(chat_id: int) -> str | None:
+    """Списывает один ответ из дневного лимита чата. None — можно отвечать.
+
+    Лимита на одного человека нет: болтать с Интендантом можно сколько угодно,
+    общий лимит держит запросы в бесплатной квоте Google.
+    """
+    key = (db._today(), chat_id)
+    if _used[key] >= config.AI_PER_CHAT_DAY:
         return "Интендант на сегодня охрип — слишком много болтали. До завтра."
-    if _used[(day, "user", user_id)] >= config.AI_PER_USER_DAY:
-        return "С тобой на сегодня наговорился. Приходи завтра, отдохнём друг от друга."
-    _used[(day, "chat", chat_id)] += 1
-    _used[(day, "user", user_id)] += 1
+    _used[key] += 1
     return None
 
 
-def refund_quota(chat_id: int, user_id: int) -> None:
+def refund_quota(chat_id: int) -> None:
     """Ответа не было — попытка не считается."""
-    day = db._today()
-    _used[(day, "chat", chat_id)] -= 1
-    _used[(day, "user", user_id)] -= 1
+    _used[(db._today(), chat_id)] -= 1
 
 
 # --- Обращение к боту ------------------------------------------------------
@@ -118,7 +105,7 @@ def build_prompt(chat_id: int, asker: str) -> str:
 
 @router.message(F.text, addressed_to_me)
 async def chat(message: Message, bot: Bot) -> None:
-    refusal = take_quota(message.chat.id, message.from_user.id)
+    refusal = take_quota(message.chat.id)
     if refusal:
         await message.reply(refusal)
         return
@@ -129,7 +116,7 @@ async def chat(message: Message, bot: Bot) -> None:
                                                           message.from_user.first_name))
     except Exception as error:  # сеть, лимит Google, блокировка — чат не должен падать
         log.warning("Gemini не ответил: %s", error)
-        refund_quota(message.chat.id, message.from_user.id)
+        refund_quota(message.chat.id)
         await message.reply("Интендант задумался и забыл, о чём речь. Попробуй позже.")
         return
 
