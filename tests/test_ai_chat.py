@@ -174,6 +174,30 @@ def test_hero_search_by_names_and_russian_aliases():
     assert heroes.find("лидер клана, сегодня арена") == []
 
 
+@pytest.mark.parametrize("text, hero", [
+    ("бот, а николас?", "Sir Nicholas"),
+    ("а акриция?", "Acrizia"),
+    ("людоеда качать?", "Maneater"),     # перевод, а не транслит
+    ("атаман на гидре", "Warlord"),
+    ("с каэлем в связке", "Kael"),       # редкий, но имя собственное
+    ("Лидия Восставшая", "Lydia the Deathsiren"),
+])
+def test_hero_search_by_official_russian_names(text, hero):
+    assert heroes.find(text) == [hero]
+
+
+@pytest.mark.parametrize("text", [
+    "палач и лекарь пришли",             # нарицательные имена редких героев
+    "капитан команды на арене",
+    "перезвоню вечером",
+    "синдром понедельника",
+    "золотая середина, личный рекорд",
+    "кого на гидру ставить сегодня вечером",
+])
+def test_ordinary_words_are_not_heroes(text):
+    assert heroes.find(text) == []
+
+
 def test_hero_aliases_point_to_real_heroes():
     heroes._matcher.cache_clear()
     heroes._matcher()  # падает, если в hero_aliases.txt опечатка в имени
@@ -224,4 +248,4 @@ async def test_hero_reference_goes_into_prompt(monkeypatch):
     ai_chat.remember(Chat.id, "Дима", msg.text)
     await ai_chat.chat(msg, FakeBot())
     assert "Справка по упомянутым героям" in seen["prompt"]
-    assert "Arbiter [Legendary" in seen["prompt"]
+    assert "Arbiter / Арбитр [Legendary" in seen["prompt"]

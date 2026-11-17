@@ -1,13 +1,15 @@
 """Справка по героям Raid для собеседника: рейтинги HellHades (heroes.json).
 
 Ищет упомянутых в тексте героев — по английскому имени, короткому имени
-(Siphi вместо Siphi the Lost Bride) или русскому прозвищу из hero_aliases.txt —
+(Siphi вместо Siphi the Lost Bride), русскому имени из локализации игры
+(Людоед, Лидия Восставшая или просто Лидия) или прозвищу из hero_aliases.txt —
 и отдаёт их оценки строками для промпта. Данные обновляет tools/fetch_heroes.py.
 """
 
 import json
 import re
 from collections.abc import Iterable
+from difflib import SequenceMatcher
 from functools import lru_cache
 
 from bot.content.loader import CONTENT_DIR, load
@@ -38,28 +40,101 @@ def _heroes() -> dict[str, list[dict]]:
     return by_name
 
 
+# Падежные окончания после основы русского имени — по типу склонения,
+# чтобы «Перезвон» не ловил «перезвоню», а «Синдра» — «синдром».
+_FEM = r"(?:а|я|ы|и|е|у|ю|ой|ей|ою|ею)"           # Лидия → Лидию, Лидией
+_SOFT = r"(?:ь|я|ю|е|ем|и|ей)"                      # Каэль → Каэля, Каэлем
+_HARD = r"(?:а|у|е|ом|ы|ов|ам|ами|ах)?"             # Арбитр → Арбитра, Арбитром
+
+
 def _stem(key: str) -> str:
     """Основа русского слова для склонений: «лидия» → «лиди» (лидию, лидией)."""
-    if re.search("[а-яё]", key) and len(key) > 4 and key[-1] in "аяоеиыуюйь":
-        return key[:-1]
-    return key
+    return _inflect(key)[0]
+
+
+def _inflect(key: str) -> tuple[str, str]:
+    """(основа, разрешённые окончания) для ключа поиска."""
+    if not _cyrillic(key) or len(key) < 5:
+        return key, ""
+    if key[-1] in "ая":
+        return key[:-1], _FEM
+    if key[-1] == "ь":
+        return key[:-1], _SOFT
+    if key[-1] not in "аяоеиыуюйёэ":
+        return key, _HARD
+    return key, ""
+
+
+def _cyrillic(key: str) -> bool:
+    return bool(re.search("[а-яё]", key))
 
 
 def _pattern(keys) -> re.Pattern:
     # Длинные ключи первыми, чтобы «Siphi the Lost Bride» не съелось как «Siphi».
-    # Русским словам разрешены окончания (Арбитра, Лидию), английским — нет.
-    parts = [re.escape(_stem(k)) + (r"\w{0,3}" if re.search("[а-яё]", k) else "")
-             for k in sorted(keys, key=len, reverse=True)]
+    # Русским словам от 5 букв разрешены падежные окончания, остальным — нет.
+    parts = [re.escape(stem) + endings for stem, endings in
+             (_inflect(k) for k in sorted(keys, key=len, reverse=True))]
     return re.compile(r"(?<!\w)(" + "|".join(parts) + r")(?!\w)", re.IGNORECASE)
+
+
+# Однословные русские имена, совпадающие с обычными словами чата.
+_COMMON_WORDS = {
+    "один", "мать", "сестра", "тень", "дева", "море", "мороз", "зверь", "игла",
+    "мина", "рея", "ария", "мари", "энда", "финал", "фильм", "сигнал", "принцип",
+    "визит", "беседа", "жалоба", "зависть", "жалость", "оборона", "оборот",
+    "турнир", "катер", "каток", "валун", "вальс", "валюта", "морс", "мораль",
+    "морда", "моряк", "посол", "принц", "свидетель", "синдром", "телец", "тиран",
+    "трибунал", "финансы", "фильтр", "хозяин", "царица", "чучело", "ярлык",
+    "убийца", "хищник", "таран", "венера", "большое",
+    # Титулы в начале составных имён: «Капитан Темила», «Страж Святилища».
+    "капитан", "страж", "кузнец", "королева", "король", "хранитель", "старшина",
+    "советник", "смотритель", "сержант", "священник", "епископ", "друид",
+    "вожак", "ловец", "мачеха", "ведунья", "колдунья", "герцогиня", "графиня",
+    "баронесса", "грешник", "трибун", "адмирал", "маньяк", "крошка", "стратег",
+    # Заимствования, которые в чате чаще просто слова.
+    "командир", "ветеран", "снайпер", "скелет", "фанатик", "аристократ",
+    "гладиатор", "лучница", "мародер", "авангард", "пантера", "магистр",
+}
+
+# Ниже эпика однословные русские имена — обычно нарицательные («Палач»,
+# «Страж», «Лекарь»): в чате это почти всегда просто слово, а не герой.
+# Исключение — имена собственные: их не переводили, а транслитерировали
+# (Kael → Каэль), это и проверяем по звучанию.
+_LOW_RARITY = {"Common", "Uncommon", "Rare"}
+
+_TRANSLIT = dict(zip("абвгдеёжзийклмнопрстуфхцчшщъыьэюя",
+                     ["a", "b", "v", "g", "d", "e", "e", "zh", "z", "i", "i", "k", "l",
+                      "m", "n", "o", "p", "r", "s", "t", "u", "f", "h", "ts", "ch", "sh",
+                      "sh", "", "i", "", "e", "iu", "ia"]))
+
+
+def _transliterated(ru: str, en: str) -> bool:
+    latin = "".join(_TRANSLIT.get(ch, ch) for ch in ru.lower())
+    return SequenceMatcher(None, latin, en.lower()).ratio() >= 0.6
 
 
 @lru_cache
 def _matcher() -> tuple[re.Pattern, dict[str, str]]:
     keys: dict[str, str] = {}  # ключ поиска в нижнем регистре → имя героя
+    first_words: dict[str, set[str]] = {}
     for name, forms in _heroes().items():
+        ru = forms[0].get("ru", "")
         for key in (name, name.removeprefix("The "), forms[0]["short"]):
             if len(key) >= 3:
                 keys.setdefault(key.lower(), name)
+        single = ru and " " not in ru
+        generic = single and (ru.lower() in _COMMON_WORDS or (
+            forms[0]["rarity"] in _LOW_RARITY and not _transliterated(ru, name)))
+        if ru and not generic:
+            keys.setdefault(ru.lower(), name)
+        if " " in ru:  # «Лидия Восставшая» ищем и просто как «Лидия»
+            first_words.setdefault(ru.split()[0].lower(), set()).add(name)
+    for word, names in first_words.items():
+        # «Леди», «Король» — у многих героев, такие слова не берём.
+        # Прилагательное в начале («Золотая Жница») — не имя.
+        adjective = re.search(r"(ая|яя|ое|ее|ый|ий|ой|ые|ие)$", word)
+        if len(names) == 1 and len(word) >= 4 and word not in _COMMON_WORDS and not adjective:
+            keys.setdefault(word, next(iter(names)))
     for line in load("hero_aliases.txt"):
         alias, _, name = (part.strip() for part in line.partition("="))
         if name not in _heroes():
@@ -118,7 +193,8 @@ def describe(name: str) -> str:
     """Одна-две строки справки по герою для промпта."""
     lines = []
     for hero in _heroes()[name]:
-        title = name + (f" (форма {hero['form']})" if hero["form"] else "")
+        title = name + (f" / {hero['ru']}" if hero.get("ru") else "")
+        title += f" (форма {hero['form']})" if hero["form"] else ""
         meta = ", ".join((hero["rarity"], hero["role"], hero["affinity"], hero["faction"]))
         ratings = "; ".join(f"{LABELS.get(k, k.capitalize())} {_num(v)}"
                             for k, v in hero["ratings"].items())
