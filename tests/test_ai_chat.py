@@ -6,7 +6,8 @@ import pytest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("BOT_TOKEN", "test:token")
 
-from bot import config  # noqa: E402
+from bot import config, db  # noqa: E402
+from bot.content import heroes  # noqa: E402
 from bot.handlers import ai_chat  # noqa: E402
 from bot.services import ai  # noqa: E402
 
@@ -46,7 +47,9 @@ class FakeBot:
 
 
 @pytest.fixture(autouse=True)
-def fresh_state(monkeypatch):
+async def fresh_state(monkeypatch, tmp_path):
+    monkeypatch.setattr(config, "DB_PATH", str(tmp_path / "test.db"))
+    await db.init()
     ai_chat._used.clear()
     ai_chat._history.clear()
     monkeypatch.setattr(config, "AI_PER_CHAT_DAY", 3)
@@ -160,3 +163,65 @@ async def test_retry_once_on_503(monkeypatch):
     with pytest.raises(ai.AIError):
         await ai.generate("s", "p")
     assert len(calls) == 1, "лимит квоты повторять бессмысленно"
+
+
+# --- Герои -----------------------------------------------------------------
+
+def test_hero_search_by_names_and_russian_aliases():
+    text = "Арбитра или варлорда на гидру? А лидию? siphi, The Primogenitor"
+    assert heroes.find(text) == ["Arbiter", "Warlord", "Lydia the Deathsiren",
+                                 "Siphi the Lost Bride", "The Primogenitor"]
+    assert heroes.find("лидер клана, сегодня арена") == []
+
+
+def test_hero_aliases_point_to_real_heroes():
+    heroes._matcher.cache_clear()
+    heroes._matcher()  # падает, если в hero_aliases.txt опечатка в имени
+
+
+def test_hero_description_has_content_ratings():
+    text = heroes.describe("Arbiter")
+    assert "Клан-босс" in text and "Гидра" in text and "Арена" in text
+    assert heroes.describe("The Primogenitor").count("форма") == 2
+
+
+async def test_teach_and_forget_hero():
+    msg = Msg("бот, герой лидия топовый разломщик, в пве пригодится всегда")
+    assert ai_chat._teaching(msg)
+    await ai_chat.teach_hero(msg)
+    assert "Lydia the Deathsiren" in msg.replies[0]
+    assert await db.hero_notes("Lydia the Deathsiren") == [
+        ("топовый разломщик, в пве пригодится всегда", "Дима")]
+
+    unknown = Msg("Бот, герой Гроза — новенький, бьёт больно")
+    await ai_chat.teach_hero(unknown)
+    assert "такого нет" in unknown.replies[0]
+
+    ai_chat.remember(Chat.id, "Вася", "что скажешь про лидию и грозу?")
+    reference = await ai_chat.hero_reference(Chat.id)
+    assert "Lydia the Deathsiren" in reference and "топовый разломщик" in reference
+    assert "гроза: в базе HellHades нет" in reference and "бьёт больно" in reference
+
+    forget = Msg("бот, забудь героя лидия")
+    await ai_chat.forget_hero(forget)
+    assert "Вычеркнул" in forget.replies[0]
+    assert await db.hero_notes("Lydia the Deathsiren") == []
+
+
+def test_question_about_hero_is_not_a_lesson():
+    assert not ai_chat._teaching(Msg("бот, герой Арбитр хорош на гидре?"))
+    assert not ai_chat._teaching(Msg("бот, как там Арбитр"))
+
+
+async def test_hero_reference_goes_into_prompt(monkeypatch):
+    seen = {}
+
+    async def fake_generate(system, prompt):
+        seen["prompt"] = prompt
+        return "ок"
+    monkeypatch.setattr(ai, "generate", fake_generate)
+    msg = Msg("Бот, Арбитр нужен на Гидру?")
+    ai_chat.remember(Chat.id, "Дима", msg.text)
+    await ai_chat.chat(msg, FakeBot())
+    assert "Справка по упомянутым героям" in seen["prompt"]
+    assert "Arbiter [Legendary" in seen["prompt"]

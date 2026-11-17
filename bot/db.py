@@ -62,6 +62,17 @@ CREATE TABLE IF NOT EXISTS wallets (
     bonus_day TEXT NOT NULL DEFAULT ''
 );
 
+-- Заметки клана о героях: «бот, герой Лидия — топовый разломщик».
+-- hero — имя из heroes.json или, если героя там не нашлось, слово из чата.
+CREATE TABLE IF NOT EXISTS hero_notes (
+    id      INTEGER PRIMARY KEY,
+    hero    TEXT NOT NULL,
+    note    TEXT NOT NULL,
+    author  TEXT NOT NULL,
+    created TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS hero_notes_hero ON hero_notes (hero);
+
 CREATE TABLE IF NOT EXISTS duel_log (
     day   TEXT NOT NULL,
     tg_id INTEGER NOT NULL,
@@ -366,6 +377,40 @@ async def top_stat(chat_id: int, stat: str, limit: int = 10) -> list[tuple[int, 
             (chat_id, stat, limit),
         )).fetchall()
         return [(r[0], r[1]) for r in rows]
+
+
+# --- Заметки о героях -----------------------------------------------------
+
+async def add_hero_note(hero: str, note: str, author: str) -> None:
+    async with aiosqlite.connect(config.DB_PATH) as db:
+        await db.execute(
+            "INSERT INTO hero_notes (hero, note, author, created) VALUES (?, ?, ?, ?)",
+            (hero, note, author, _today()),
+        )
+        await db.commit()
+
+
+async def hero_notes(hero: str) -> list[tuple[str, str]]:
+    """(заметка, автор) по герою, старые сначала."""
+    async with aiosqlite.connect(config.DB_PATH) as db:
+        rows = await (await db.execute(
+            "SELECT note, author FROM hero_notes WHERE hero = ? ORDER BY id", (hero,),
+        )).fetchall()
+        return [(r[0], r[1]) for r in rows]
+
+
+async def hero_note_keys() -> list[str]:
+    """Герои, о которых есть хоть одна заметка."""
+    async with aiosqlite.connect(config.DB_PATH) as db:
+        rows = await (await db.execute("SELECT DISTINCT hero FROM hero_notes")).fetchall()
+        return [r[0] for r in rows]
+
+
+async def drop_hero_notes(hero: str) -> int:
+    async with aiosqlite.connect(config.DB_PATH) as db:
+        cursor = await db.execute("DELETE FROM hero_notes WHERE hero = ?", (hero,))
+        await db.commit()
+        return cursor.rowcount
 
 
 # --- Монеты ---------------------------------------------------------------
