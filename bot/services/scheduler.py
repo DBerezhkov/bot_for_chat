@@ -23,6 +23,11 @@ async def _send_reminder(bot: Bot, job_id: str) -> None:
     # Часть фраз начинается прямо с {when} — без этого выходит «через 2 часа
     # обнуление Гидры» со строчной буквы в начале сообщения.
     text = text[0].upper() + text[1:]
+    # В Telegram нет @all: «тегнуть всех» — значит упомянуть каждого, кого
+    # бот видел в чате, иначе уведомление придёт только тем, кто не в муте.
+    players = await db.all_players()
+    if players:
+        text += "\n\n" + " ".join(_mention(p) for p in players)
     await bot.send_message(config.CLAN_CHAT_ID, text)
 
 

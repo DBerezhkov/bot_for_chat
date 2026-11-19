@@ -193,6 +193,18 @@ async def test_reminder_sends_text(clean_db, reminder):
     assert text[0].isupper(), text
 
 
+async def test_reminder_tags_everyone(clean_db):
+    await db.upsert_player(1, "Дмитрий", "dmitry")
+    await db.upsert_player(2, "Без ника", None)
+
+    bot = FakeBot()
+    await scheduler._send_reminder(bot, REMINDERS[0].job_id)
+
+    _, text = bot.sent[0]
+    assert "@dmitry" in text
+    assert '<a href="tg://user?id=2">Без ника</a>' in text
+
+
 async def test_joke_mentions_player(clean_db, monkeypatch):
     await db.upsert_player(1, "Дмитрий", "dmitry")
     monkeypatch.setattr(config, "JOKE_MENTION_CHANCE", 1.0)
