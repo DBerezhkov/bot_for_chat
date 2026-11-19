@@ -13,6 +13,7 @@ from bot.content.loader import load  # noqa: E402
 from bot.content.reminders import REMINDERS  # noqa: E402
 from bot.handlers.rpg import exp_to_next  # noqa: E402
 from bot.services import scheduler  # noqa: E402
+from apscheduler.schedulers.asyncio import AsyncIOScheduler  # noqa: E402
 
 
 @pytest.fixture
@@ -21,12 +22,31 @@ async def clean_db(tmp_path, monkeypatch):
     await db.init()
 
 
+class FakeMessage:
+    def __init__(self, bot, message_id):
+        self.bot, self.message_id = bot, message_id
+
+    async def reply(self, text):
+        self.bot.replies.append((self.message_id, text))
+
+
 class FakeBot:
-    def __init__(self):
-        self.sent = []
+    def __init__(self, can_pin=True):
+        self.sent, self.pinned, self.unpinned, self.replies = [], [], [], []
+        self.can_pin = can_pin
 
     async def send_message(self, chat_id, text):
         self.sent.append((chat_id, text))
+        return FakeMessage(self, len(self.sent))
+
+    async def pin_chat_message(self, chat_id, message_id, disable_notification=None):
+        if not self.can_pin:
+            from aiogram.exceptions import TelegramBadRequest
+            raise TelegramBadRequest(method=None, message="not enough rights")
+        self.pinned.append((message_id, disable_notification))
+
+    async def unpin_chat_message(self, chat_id, message_id=None):
+        self.unpinned.append(message_id)
 
 
 async def test_player_lifecycle(clean_db):
@@ -194,7 +214,7 @@ async def test_reminder_jobs_fire_on_the_right_weekday(clean_db, monkeypatch):
 @pytest.mark.parametrize("reminder", REMINDERS, ids=lambda r: r.job_id)
 async def test_reminder_sends_text(clean_db, reminder):
     bot = FakeBot()
-    await scheduler._send_reminder(bot, reminder.job_id)
+    await scheduler._send_reminder(bot, AsyncIOScheduler(), reminder.job_id)
 
     chat_id, text = bot.sent[0]
     assert chat_id == config.CLAN_CHAT_ID
@@ -209,7 +229,7 @@ async def test_reminder_capitalizes_when_after_sentence_end(clean_db, monkeypatc
         lambda self: ("Лентяи! {when} Гидра обновится.",)))
 
     bot = FakeBot()
-    await scheduler._send_reminder(bot, reminder.job_id)
+    await scheduler._send_reminder(bot, AsyncIOScheduler(), reminder.job_id)
 
     assert bot.sent[0][1].startswith(f"Лентяи! {reminder.when.capitalize()} Гидра")
 
@@ -219,11 +239,59 @@ async def test_reminder_tags_everyone(clean_db):
     await db.upsert_player(2, "Без ника", None)
 
     bot = FakeBot()
-    await scheduler._send_reminder(bot, REMINDERS[0].job_id)
+    await scheduler._send_reminder(bot, AsyncIOScheduler(), REMINDERS[0].job_id)
 
     _, text = bot.sent[0]
     assert "@dmitry" in text
     assert '<a href="tg://user?id=2">Без ника</a>' in text
+
+
+def test_only_last_reminders_are_pinned():
+    pinned = {(r.key, r.pin_minutes) for r in REMINDERS if r.pin_minutes}
+    assert pinned == {("hydra", 30), ("chimera", 30)}
+    assert all(r.angry for r in REMINDERS if r.pin_minutes)
+
+
+async def test_pinned_reminder_has_no_tags_and_unpins_later(clean_db):
+    await db.upsert_player(1, "Дмитрий", "dmitry")
+    reminder = next(r for r in REMINDERS if r.pin_minutes)
+    bot, sched = FakeBot(), AsyncIOScheduler(timezone=config.TZ)
+
+    await scheduler._send_reminder(bot, sched, reminder.job_id)
+
+    assert "@dmitry" not in bot.sent[0][1]
+    assert bot.pinned == [(1, False)]  # False — уведомить всех
+    [(chat_id, message_id, at)] = await db.pending_unpins()
+    assert (chat_id, message_id) == (config.CLAN_CHAT_ID, 1)
+    assert [j.id for j in sched.get_jobs()] == [f"unpin_{chat_id}_1"]
+
+    await scheduler._unpin(bot, chat_id, message_id)
+    assert bot.unpinned == [1]
+    assert await db.pending_unpins() == []
+
+
+async def test_pin_without_rights_falls_back_to_tags(clean_db):
+    await db.upsert_player(1, "Дмитрий", "dmitry")
+    reminder = next(r for r in REMINDERS if r.pin_minutes)
+    bot = FakeBot(can_pin=False)
+
+    await scheduler._send_reminder(bot, AsyncIOScheduler(), reminder.job_id)
+
+    assert bot.replies == [(1, "@dmitry")]
+    assert await db.pending_unpins() == []
+
+
+async def test_unpin_survives_restart(clean_db):
+    """Перезапуск в эти полчаса не должен оставить закреп навсегда."""
+    from datetime import datetime, timedelta
+    at = datetime.now(config.TZ) + timedelta(minutes=10)
+    await db.add_pending_unpin(config.CLAN_CHAT_ID, 42, at)
+
+    sched = await scheduler.setup(FakeBot())
+    try:
+        assert sched.get_job(f"unpin_{config.CLAN_CHAT_ID}_42") is not None
+    finally:
+        sched.shutdown(wait=False)
 
 
 async def test_joke_mentions_player(clean_db, monkeypatch):

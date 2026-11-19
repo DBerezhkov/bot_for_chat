@@ -79,6 +79,15 @@ CREATE TABLE IF NOT EXISTS duel_log (
     count INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (day, tg_id)
 );
+
+-- Закреплённые напоминания, которые бот сам открепит. В базе, а не только в
+-- планировщике: перезапуск в эти полчаса иначе оставил бы закреп навсегда.
+CREATE TABLE IF NOT EXISTS pending_unpins (
+    chat_id    INTEGER NOT NULL,
+    message_id INTEGER NOT NULL,
+    unpin_at   TEXT NOT NULL,
+    PRIMARY KEY (chat_id, message_id)
+);
 """
 
 
@@ -477,3 +486,29 @@ async def richest(limit: int = 10) -> list[tuple[int, int]]:
             "SELECT tg_id, coins FROM wallets ORDER BY coins DESC, tg_id LIMIT ?", (limit,)
         )).fetchall()
         return [(r[0], r[1]) for r in rows]
+
+
+async def add_pending_unpin(chat_id: int, message_id: int, unpin_at: datetime) -> None:
+    async with aiosqlite.connect(config.DB_PATH) as db:
+        await db.execute(
+            "INSERT OR REPLACE INTO pending_unpins VALUES (?, ?, ?)",
+            (chat_id, message_id, unpin_at.isoformat()),
+        )
+        await db.commit()
+
+
+async def pending_unpins() -> list[tuple[int, int, datetime]]:
+    async with aiosqlite.connect(config.DB_PATH) as db:
+        rows = await (await db.execute(
+            "SELECT chat_id, message_id, unpin_at FROM pending_unpins"
+        )).fetchall()
+        return [(r[0], r[1], datetime.fromisoformat(r[2])) for r in rows]
+
+
+async def drop_pending_unpin(chat_id: int, message_id: int) -> None:
+    async with aiosqlite.connect(config.DB_PATH) as db:
+        await db.execute(
+            "DELETE FROM pending_unpins WHERE chat_id = ? AND message_id = ?",
+            (chat_id, message_id),
+        )
+        await db.commit()

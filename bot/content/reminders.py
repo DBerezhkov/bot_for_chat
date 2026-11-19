@@ -26,6 +26,9 @@ class Reminder:
     at: time
     when: str
     angry: bool = False
+    # Больше нуля — сообщение уходит без тегов, бот закрепляет его с
+    # уведомлением всем и через столько минут открепляет.
+    pin_minutes: int = 0
 
     @property
     def job_id(self) -> str:
@@ -41,9 +44,11 @@ REMINDERS: tuple[Reminder, ...] = (
     # Гидра: за сутки и за 2 часа до обновления, за полчаса — уже со злостью.
     Reminder(key="hydra", weekday=TUE, at=time(11, 0), when="завтра в 11:00"),
     Reminder(key="hydra", weekday=WED, at=time(9, 0), when="через 2 часа"),
-    Reminder(key="hydra", weekday=WED, at=time(10, 30), when="через полчаса", angry=True),
+    Reminder(key="hydra", weekday=WED, at=time(10, 30), when="через полчаса", angry=True,
+             pin_minutes=30),
     # Химера: так же, до закрытия боёв.
     Reminder(key="chimera", weekday=WED, at=time(14, 30), when="завтра в 14:30"),
     Reminder(key="chimera", weekday=THU, at=time(12, 30), when="через 2 часа"),
-    Reminder(key="chimera", weekday=THU, at=time(14, 0), when="через полчаса", angry=True),
+    Reminder(key="chimera", weekday=THU, at=time(14, 0), when="через полчаса", angry=True,
+             pin_minutes=30),
 )
