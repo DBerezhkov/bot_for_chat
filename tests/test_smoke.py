@@ -92,12 +92,14 @@ def test_phrase_sets_are_big_enough():
     assert len(load("phrases", "jokes", "personal.txt")) >= 200
     for key in REMINDER_KEYS:
         assert len(load("phrases", "reminders", f"{key}.txt")) >= 25, key
+        assert len(load("phrases", "reminders", f"{key}_angry.txt")) >= 25, key
 
 
 @pytest.mark.parametrize("parts", [
     ("phrases", "jokes", "general.txt"),
     ("phrases", "jokes", "personal.txt"),
     *[("phrases", "reminders", f"{key}.txt") for key in REMINDER_KEYS],
+    *[("phrases", "reminders", f"{key}_angry.txt") for key in REMINDER_KEYS],
 ])
 def test_no_duplicate_phrases(parts):
     phrases = load(*parts)
@@ -131,15 +133,23 @@ def test_only_hydra_and_chimera_are_reminded():
 
 
 def test_reminder_schedule():
-    """Оба события — за сутки и за 2 часа: Гидра до обновления в среду в 11:00
-    МСК, Химера до закрытия боёв в четверг в 14:30 МСК."""
+    """Оба события — за сутки, за 2 часа и за полчаса: Гидра до обновления в
+    среду в 11:00 МСК, Химера до закрытия боёв в четверг в 14:30 МСК."""
     schedule = {(r.key, r.weekday, r.at.hour, r.at.minute) for r in REMINDERS}
     assert schedule == {
         ("hydra", 1, 11, 0),
         ("hydra", 2, 9, 0),
         ("chimera", 2, 14, 30),
         ("chimera", 3, 12, 30),
+        ("hydra", 2, 10, 30),
+        ("chimera", 3, 14, 0),
     }
+
+
+def test_last_reminder_is_angry():
+    """Злое — только последнее, за полчаса; первые два обычные."""
+    angry = {(r.key, r.when) for r in REMINDERS if r.angry}
+    assert angry == {("hydra", "через полчаса"), ("chimera", "через полчаса")}
 
 
 async def test_reminders_can_be_switched_off(clean_db, monkeypatch):
@@ -191,6 +201,17 @@ async def test_reminder_sends_text(clean_db, reminder):
     assert reminder.when.lower() in text.lower()
     assert "{" not in text
     assert text[0].isupper(), text
+
+
+async def test_reminder_capitalizes_when_after_sentence_end(clean_db, monkeypatch):
+    reminder = REMINDERS[0]
+    monkeypatch.setattr(type(reminder), "texts", property(
+        lambda self: ("Лентяи! {when} Гидра обновится.",)))
+
+    bot = FakeBot()
+    await scheduler._send_reminder(bot, reminder.job_id)
+
+    assert bot.sent[0][1].startswith(f"Лентяи! {reminder.when.capitalize()} Гидра")
 
 
 async def test_reminder_tags_everyone(clean_db):

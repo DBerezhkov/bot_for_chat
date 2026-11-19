@@ -1,6 +1,7 @@
 import html
 import logging
 import random
+import re
 from datetime import datetime, timedelta
 
 from aiogram import Bot
@@ -19,10 +20,14 @@ JOKE_JOB_PREFIX = "joke_"
 
 async def _send_reminder(bot: Bot, job_id: str) -> None:
     reminder = next(r for r in REMINDERS if r.job_id == job_id)
-    text = random.choice(reminder.texts).format(when=reminder.when)
-    # Часть фраз начинается прямо с {when} — без этого выходит «через 2 часа
-    # обнуление Гидры» со строчной буквы в начале сообщения.
-    text = text[0].upper() + text[1:]
+    # Часть фраз начинает с {when} предложение — в начале сообщения или после
+    # «!» и «.». Там срок нужен с заглавной, иначе выходит «Лентяи! через
+    # полчаса Химера закроется».
+    when = reminder.when
+    text = re.sub(r"(^|[.!?…]\s+)\{when\}",
+                  lambda m: m.group(1) + when[0].upper() + when[1:],
+                  random.choice(reminder.texts))
+    text = text.format(when=when)
     # В Telegram нет @all: «тегнуть всех» — значит упомянуть каждого, кого
     # бот видел в чате, иначе уведомление придёт только тем, кто не в муте.
     players = await db.all_players()

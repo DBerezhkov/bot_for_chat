@@ -17,6 +17,8 @@ BANKS = {
     ("jokes", "personal.txt"): {"mention"},
     ("reminders", "hydra.txt"): {"when"},
     ("reminders", "chimera.txt"): {"when"},
+    ("reminders", "hydra_angry.txt"): {"when"},
+    ("reminders", "chimera_angry.txt"): {"when"},
     ("fun", "who.txt"): {"name"},
     ("fun", "predictions.txt"): set(),
     ("fun", "hero_intros.txt"): set(),
