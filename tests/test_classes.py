@@ -437,3 +437,30 @@ async def test_double_tap_does_not_pay_twice(clean_db):
     player = await db.get_player(1)
     total = player.exp + sum(exp_to_next(lvl) for lvl in range(1, player.level))
     assert total == 7
+
+
+
+def test_profile_shows_only_current_and_next_dungeon():
+    from bot.handlers.rpg import nearby_locations
+    titles = lambda lvl: [loc.key for loc in nearby_locations(lvl)]  # noqa: E731
+    assert titles(1) == ["rat_field", "wolf_forest"]
+    assert titles(4) == ["rat_field", "wolf_forest"]
+    assert titles(5) == ["wolf_forest", "spider_catacombs"]
+    assert titles(20) == ["lair"]
+    assert titles(35) == ["lair"]
+
+
+def test_collection_lists_only_visited_places():
+    from bot.handlers.rpg import _collection
+    assert _collection({}, set()) == []
+    text = "\n".join(_collection({}, {"wolf_forest"}))
+    assert "Волчий лес" in text and "Крысиная нора" not in text
+    # находка — тоже след визита
+    rat_item = LOCATIONS_BY_KEY["rat_field"].findings[0].key
+    assert "Крысиная нора" in "\n".join(_collection({rat_item: 1}, set()))
+
+
+async def test_visit_is_recorded_once(clean_db):
+    await db.mark_visit(1, "rat_field")
+    await db.mark_visit(1, "rat_field")
+    assert await db.visits(1) == {"rat_field"}

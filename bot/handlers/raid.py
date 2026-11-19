@@ -225,6 +225,7 @@ async def start_run(callback: CallbackQuery) -> None:
         return
 
     location = LOCATIONS_BY_KEY[loc_key]
+    await db.mark_visit(player.tg_id, location.key)
     state = run_mod.start(location, hp=hero_stats(player)[0], rng=random.Random(),
                           cls=player.cls)
     await db.save_run(player.tg_id, state.dumps())

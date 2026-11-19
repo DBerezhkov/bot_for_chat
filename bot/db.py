@@ -89,6 +89,13 @@ CREATE TABLE IF NOT EXISTS pending_unpins (
     PRIMARY KEY (chat_id, message_id)
 );
 
+-- В каких подземельях игрок уже бывал: профиль показывает находки только там.
+CREATE TABLE IF NOT EXISTS visits (
+    tg_id    INTEGER NOT NULL,
+    location TEXT NOT NULL,
+    PRIMARY KEY (tg_id, location)
+);
+
 -- Разовые действия над базой, чтобы не повторить их при каждом запуске.
 CREATE TABLE IF NOT EXISTS meta (
     key   TEXT PRIMARY KEY,
@@ -200,6 +207,19 @@ async def get_player(tg_id: int) -> Player | None:
             energy=row["energy"], energy_date=row["energy_date"],
             cls=row["cls"], cls_changed=row["cls_changed"],
         )
+
+
+async def mark_visit(tg_id: int, location: str) -> None:
+    async with aiosqlite.connect(config.DB_PATH) as db:
+        await db.execute("INSERT OR IGNORE INTO visits VALUES (?, ?)", (tg_id, location))
+        await db.commit()
+
+
+async def visits(tg_id: int) -> set[str]:
+    async with aiosqlite.connect(config.DB_PATH) as db:
+        rows = await (await db.execute(
+            "SELECT location FROM visits WHERE tg_id = ?", (tg_id,))).fetchall()
+        return {r[0] for r in rows}
 
 
 async def set_class(tg_id: int, cls: str) -> None:

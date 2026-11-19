@@ -14,27 +14,39 @@ from bot.game.world import LOCATIONS
 router = Router(name="rpg")
 
 
+def nearby_locations(level: int) -> list:
+    """Подземелье по уровню и следующее за ним. Остальное в профиле — шум:
+    дальние локации на низком уровне — сплошные «смертельно» и нули."""
+    current = max((i for i, loc in enumerate(LOCATIONS) if loc.min_level <= level), default=0)
+    return list(LOCATIONS[current:current + 2])
+
+
 def _floor_odds(level: int, cls: str | None = None) -> list[str]:
     """Куда игроку соваться и докуда он там дойдёт.
 
     Считается вслепую, по порогам боя: это честный прогноз для того, кто просто
     жмёт кнопки, а не угадал повадки твари."""
     lines = ["", "🧭 <b>Куда идти</b>"]
-    for location in LOCATIONS:
+    for location in nearby_locations(level):
         odds = " · ".join(
             f"{i}: {win_chance(level, monster, cls):.0%}"
             for i, monster in enumerate(location.monsters, 1)
         )
         lines.append(f"{location.label} ({location.levels}) — {location.verdict(level)}")
         lines.append(f"  этажи {odds}")
-    lines.append("<i>Проценты — шанс взять этаж в полном здоровье.</i>")
+    lines.append("<i>Шанс взять этаж в полном здоровье.</i>")
     return lines
 
 
-def _collection(found: dict[str, int]) -> list[str]:
-    """Ненайденное прячем за вопросами — иначе исследовать нечего."""
+def _collection(found: dict[str, int], visited: set[str]) -> list[str]:
+    """Только подземелья, где игрок бывал; ненайденное там — за вопросами."""
+    # Находка оттуда — тоже след визита: отметки ведутся не с первого дня.
+    places = [loc for loc in LOCATIONS
+              if loc.key in visited or any(found.get(f.key) for f in loc.findings)]
+    if not places:
+        return []
     lines = ["", "🗺 <b>Находки</b>"]
-    for location in LOCATIONS:
+    for location in places:
         total = sum(f.limit for f in location.findings)
         mine = sum(min(found.get(f.key, 0), f.limit) for f in location.findings)
         lines.append(f"\n{location.label} — исследовано {round(100 * mine / total)}%")
@@ -78,7 +90,7 @@ async def profile(message: Message) -> None:
         lines.append(f"Восстановление через {db.next_reset()}")
 
     lines += _floor_odds(player.level, player.cls)
-    lines += _collection(await db.get_findings(player.tg_id))
+    lines += _collection(await db.get_findings(player.tg_id), await db.visits(player.tg_id))
     await message.answer("\n".join(lines))
 
 
