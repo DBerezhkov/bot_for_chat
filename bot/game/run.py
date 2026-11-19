@@ -12,13 +12,17 @@ import json
 import random
 from dataclasses import asdict, dataclass, field
 
-from bot.game.combat import Fighter, Move, RoundResult, resolve_round
+from bot.game.classes import CLASSES
+from bot.game.combat import SKILL_SCOUT, Fighter, Move, RoundResult, Side, resolve_round
 from bot.game.world import Finding, Location, drop_chance
 
 # Дна у похода нет: ниже третьего этажа ждёт та же тварь, только матёрая.
 # Предохранитель на случай, если игрок окажется неубиваемым, — чтобы поход
 # не мог крутиться вечно.
 MAX_STEPS = 30
+
+# Пассивка хиллера: после каждой убитой твари залечивает такую долю максимума.
+HEALER_REGEN = 0.15
 
 PHASE_FIGHT = "fight"
 PHASE_FORK = "fork"
@@ -42,6 +46,11 @@ class RunState:
     found: list[str] = field(default_factory=list)
     defeated: list[str] = field(default_factory=list)
     dead: bool = False
+    cls: str = ""
+    charges: int = 0
+    # Ход твари в текущем раунде, если его уже подсмотрела Разведка: тогда
+    # раунд обязан пройти именно с ним, иначе подсказка была бы враньём.
+    monster_move: str = ""
 
     def dumps(self) -> str:
         return json.dumps(asdict(self), ensure_ascii=False)
@@ -55,10 +64,25 @@ class RunState:
         return MAX_STEPS - self.step + 1
 
 
-def start(location: Location, hp: int, rng: random.Random) -> RunState:
+def start(location: Location, hp: int, rng: random.Random,
+          cls: str | None = None) -> RunState:
     monster = location.monster_at(1)
     return RunState(location=location.key, hp=hp,
-                    monster_name=monster.name, monster_hp=monster.hp)
+                    monster_name=monster.name, monster_hp=monster.hp,
+                    cls=cls or "", charges=CLASSES[cls].charges if cls else 0)
+
+
+def can_use_skill(state: RunState) -> bool:
+    return bool(state.cls) and state.charges > 0 and state.phase == PHASE_FIGHT
+
+
+def scout(state: RunState, location: Location, rng: random.Random) -> Move:
+    """Разведка: тварь выбирает ход заранее, игрок его видит. Тратит заряд,
+    но не раунд — следующим нажатием игрок отвечает уже зная ход."""
+    state.charges -= 1
+    if not state.monster_move:
+        state.monster_move = location.monster_spec(state.floor).choose(rng).value
+    return Move(state.monster_move)
 
 
 def monster_fighter(state: RunState, location: Location) -> Fighter:
@@ -69,12 +93,25 @@ def monster_fighter(state: RunState, location: Location) -> Fighter:
 
 
 def fight_round(state: RunState, player: Fighter, location: Location,
-                move: Move, rng: random.Random) -> RoundResult:
-    """Один обмен ударами. Тратит шаг и двигает поход дальше."""
+                move: Move | None, rng: random.Random,
+                use_skill: bool = False) -> RoundResult:
+    """Один обмен ударами. Тратит шаг и двигает поход дальше.
+
+    use_skill — нажат навык класса (кроме Разведки, у неё своя `scout`)."""
     monster_def = location.monster_spec(state.floor)
     monster = monster_fighter(state, location)
 
-    result = resolve_round(player, monster, move, monster_def.choose(rng), rng)
+    their = Move(state.monster_move) if state.monster_move else monster_def.choose(rng)
+    state.monster_move = ""
+
+    skill = None
+    if use_skill:
+        skill = CLASSES[state.cls].skill
+        assert skill != SKILL_SCOUT, "Разведка — не действие в раунде"
+        state.charges -= 1
+
+    result = resolve_round(player, monster, move, their, rng,
+                           side_a=Side(cls=state.cls or None, skill=skill))
 
     state.hp = player.hp
     state.monster_hp = monster.hp
@@ -82,6 +119,8 @@ def fight_round(state: RunState, player: Fighter, location: Location,
         state.defeated.append(monster.name)
         state.exp += location.exp_for(state.floor)
         state.step += 1  # встреча закрыта, счётчик двигает только она
+        if state.cls == "healer" and state.hp > 0:
+            state.hp = min(player.hp_max, state.hp + round(player.hp_max * HEALER_REGEN))
 
     _advance(state, location, monster_alive=monster.alive, rng=rng)
     return result
@@ -123,12 +162,13 @@ def take_path(state: RunState, location: Location, side: str,
 def open_chest(state: RunState, location: Location, already_found: dict[str, int],
                rng: random.Random) -> Finding | None:
     """Открывает сундук: тратит шаг и, если повезёт, отдаёт находку."""
-    prize: Finding | None = None
-    for finding in location.findings:
-        if rng.random() < drop_chance(already_found.get(finding.key, 0), finding):
-            prize = finding
-            state.found.append(finding.key)
-            break
+    # Бросок на каждую, из выпавших — случайная. Раньше брали первую выпавшую,
+    # и первая в списке находка падала заметно чаще остальных.
+    dropped = [f for f in location.findings
+               if rng.random() < drop_chance(already_found.get(f.key, 0), f)]
+    prize: Finding | None = rng.choice(dropped) if dropped else None
+    if prize:
+        state.found.append(prize.key)
 
     state.step += 1
     _advance(state, location, monster_alive=False, rng=rng)

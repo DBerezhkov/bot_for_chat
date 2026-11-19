@@ -88,7 +88,22 @@ CREATE TABLE IF NOT EXISTS pending_unpins (
     unpin_at   TEXT NOT NULL,
     PRIMARY KEY (chat_id, message_id)
 );
+
+-- Разовые действия над базой, чтобы не повторить их при каждом запуске.
+CREATE TABLE IF NOT EXISTS meta (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
 """
+
+# Колонки, добавленные после первого выпуска: CREATE TABLE IF NOT EXISTS
+# их в старую базу не добавит.
+COLUMNS = {
+    "players": {
+        "cls": "TEXT",
+        "cls_changed": "TEXT",
+    },
+}
 
 
 @dataclass
@@ -103,13 +118,38 @@ class Player:
     exp: int
     energy: int
     energy_date: str
+    cls: str | None = None
+    cls_changed: str | None = None
 
 
 async def init() -> None:
     Path(config.DB_PATH).parent.mkdir(parents=True, exist_ok=True)
     async with aiosqlite.connect(config.DB_PATH) as db:
         await db.executescript(SCHEMA)
+        for table, columns in COLUMNS.items():
+            have = {r[1] for r in await (await db.execute(f"PRAGMA table_info({table})")).fetchall()}
+            for name, kind in columns.items():
+                if name not in have:
+                    await db.execute(f"ALTER TABLE {table} ADD COLUMN {name} {kind}")
+        await _reset_rpg_once(db)
         await db.commit()
+
+
+async def _reset_rpg_once(db) -> None:
+    """Перед запуском классов все стартуют с нуля: уровни и находки со старой
+    RPG без классов обнуляются. Монеты не трогаем. Ровно один раз."""
+    done = await (await db.execute(
+        "SELECT 1 FROM meta WHERE key = 'rpg_v2_reset'")).fetchone()
+    if done:
+        return
+    await db.execute(
+        "UPDATE players SET level = 1, exp = 0, hp_max = ?, atk = ?, defense = ?",
+        (config.START_HP, config.START_ATK, config.START_DEF),
+    )
+    await db.execute("DELETE FROM findings")
+    await db.execute("DELETE FROM runs")
+    await db.execute("INSERT INTO meta VALUES ('rpg_v2_reset', ?)",
+                     (datetime.now(config.TZ).isoformat(),))
 
 
 def _today() -> str:
@@ -158,7 +198,17 @@ async def get_player(tg_id: int) -> Player | None:
             hp_max=row["hp_max"], atk=row["atk"], defense=row["defense"],
             level=row["level"], exp=row["exp"],
             energy=row["energy"], energy_date=row["energy_date"],
+            cls=row["cls"], cls_changed=row["cls_changed"],
         )
+
+
+async def set_class(tg_id: int, cls: str) -> None:
+    async with aiosqlite.connect(config.DB_PATH) as db:
+        await db.execute(
+            "UPDATE players SET cls = ?, cls_changed = ? WHERE tg_id = ?",
+            (cls, datetime.now(config.TZ).isoformat(), tg_id),
+        )
+        await db.commit()
 
 
 async def spend_energy(tg_id: int) -> bool:
@@ -182,6 +232,7 @@ async def all_players() -> list[Player]:
                 hp_max=r["hp_max"], atk=r["atk"], defense=r["defense"],
                 level=r["level"], exp=r["exp"],
                 energy=r["energy"], energy_date=r["energy_date"],
+                cls=r["cls"], cls_changed=r["cls_changed"],
             )
             for r in rows
         ]

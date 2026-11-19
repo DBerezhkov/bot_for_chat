@@ -12,6 +12,7 @@
 Всплывашка Telegram ограничена 200 символами — отсюда сжатый формат.
 """
 
+import html
 import random
 
 from aiogram import F, Router
@@ -20,8 +21,10 @@ from aiogram.filters import Command
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from bot import config, db
+from bot.locks import per_player
 from bot.game import run as run_mod
-from bot.game.combat import LABELS, Fighter, Move, RoundResult
+from bot.game.classes import CLASSES, stats_for
+from bot.game.combat import LABELS, SKILL_SCOUT, Fighter, Move, RoundResult
 from bot.game.world import LOCATIONS, LOCATIONS_BY_KEY, Location
 
 router = Router(name="raid")
@@ -39,11 +42,26 @@ def _locations_keyboard(uid: int, level: int) -> InlineKeyboardMarkup:
     ])
 
 
-def _moves_keyboard(uid: int) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[[
+def _moves_keyboard(uid: int, state: run_mod.RunState | None = None) -> InlineKeyboardMarkup:
+    rows = [[
         InlineKeyboardButton(text=LABELS[move], callback_data=f"raid:mv:{move.value}:{uid}")
         for move in Move
-    ]])
+    ]]
+    # Кнопка в общем чате, поэтому безликая и висит всегда: название навыка
+    # выдало бы класс, а число зарядов — сколько раз игрок его жал.
+    if state and state.cls:
+        rows.append([InlineKeyboardButton(text="🎯 Навык", callback_data=f"raid:sk:{uid}")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def hero_stats(player: db.Player) -> tuple[int, int, int]:
+    """Здоровье, атака и защита в бою — с учётом класса."""
+    return stats_for(player.cls, player.hp_max, player.atk, player.defense)
+
+
+def hero_fighter(player: db.Player, hp: int) -> Fighter:
+    hp_max, atk, defense = hero_stats(player)
+    return Fighter(name=player.name, hp=hp, hp_max=hp_max, atk=atk, defense=defense)
 
 
 def _fork_keyboard(uid: int) -> InlineKeyboardMarkup:
@@ -61,7 +79,9 @@ def _fork_keyboard(uid: int) -> InlineKeyboardMarkup:
 def health_line(state: run_mod.RunState, player: db.Player,
                 location: Location) -> str:
     """Строка здоровья для всплывашки — её видит только игрок."""
-    line = f"❤️ Ты {state.hp}/{player.hp_max}"
+    line = f"❤️ Ты {state.hp}/{hero_stats(player)[0]}"
+    if state.cls:
+        line += f" · 🎯 {state.charges}"
     if state.phase == run_mod.PHASE_FIGHT and state.monster_hp > 0:
         monster = run_mod.monster_fighter(state, location)
         line += f"\n👹 {monster.name} {monster.hp}/{monster.hp_max}"
@@ -70,10 +90,11 @@ def health_line(state: run_mod.RunState, player: db.Player,
 
 def round_alert(result: RoundResult, state: run_mod.RunState, player: db.Player,
                 location: Location) -> str:
+    healed = f" (+{result.healed_a} лечение)" if result.healed_a else ""
     return (
-        f"{LABELS[result.move_a]}  ·  {LABELS[result.move_b]}\n"
+        f"{result.label_a}  ·  {result.label_b}\n"
         f"{result.description}\n"
-        f"Тебе −{result.damage_to_a}, врагу −{result.damage_to_b}\n\n"
+        f"Тебе −{result.damage_to_a}{healed}, врагу −{result.damage_to_b}\n\n"
         f"{health_line(state, player, location)}"
     )[:ALERT_LIMIT]
 
@@ -92,9 +113,9 @@ def public_report(state: run_mod.RunState, name: str, location: Location,
                   level: int, levels_gained: int, exp: int = 0) -> str:
     """Единственное, что клан узнаёт о походе, — этот итог."""
     if state.dead:
-        lines = [f"💀 {name} не вернулся из похода. {location.label}"]
+        lines = [f"💀 {html.escape(name)} не вернулся из похода. {location.label}"]
     else:
-        lines = [f"🏁 {name} вернулся из похода. {location.label}"]
+        lines = [f"🏁 {html.escape(name)} вернулся из похода. {location.label}"]
 
     if state.defeated:
         lines.append(f"⚔️ Повержено: {', '.join(state.defeated)}")
@@ -119,8 +140,18 @@ async def raid(message: Message) -> None:
         await message.answer("Сначала /start, потом подвиги.")
         return
 
-    if await db.load_run(player.tg_id):
-        await message.answer("Ты уже в подземелье. Сначала выберись оттуда.")
+    if player.cls is None:
+        await message.answer("Сначала выбери ремесло: /class")
+        return
+
+    raw = await db.load_run(player.tg_id)
+    if raw:
+        # Сообщение с кнопками могло утонуть в истории чата, и без этого
+        # игрок навсегда застревал бы «в подземелье». Даём кнопки заново.
+        state = run_mod.RunState.loads(raw)
+        markup = (_fork_keyboard(player.tg_id) if state.phase == run_mod.PHASE_FORK
+                  else _moves_keyboard(player.tg_id, state))
+        await message.answer(f"{ANONYMOUS_STATUS}\nПоход продолжается.", reply_markup=markup)
         return
 
     if player.energy <= 0:
@@ -156,14 +187,17 @@ async def _advance_screen(callback: CallbackQuery, state: run_mod.RunState,
             f"{alert}\n\n⚡ Походов осталось: {fresh.energy}/{config.MAX_ENERGY}"[:ALERT_LIMIT],
             show_alert=True,
         )
-        await callback.message.edit_text(report)
+        try:
+            await callback.message.edit_text(report)
+        except TelegramAPIError:
+            pass  # итог уже стоит — например, сообщение отредактировали раньше
         return
 
     await db.save_run(player.tg_id, state.dumps())
     await callback.answer(alert, show_alert=True)
 
     markup = (_fork_keyboard(player.tg_id) if state.phase == run_mod.PHASE_FORK
-              else _moves_keyboard(player.tg_id))
+              else _moves_keyboard(player.tg_id, state))
     try:
         await callback.message.edit_reply_markup(reply_markup=markup)
     except TelegramAPIError:
@@ -171,10 +205,19 @@ async def _advance_screen(callback: CallbackQuery, state: run_mod.RunState,
 
 
 @router.callback_query(F.data.startswith("raid:go:"))
+@per_player
 async def start_run(callback: CallbackQuery) -> None:
     _, _, loc_key, owner = callback.data.split(":")
     player = await _guard(callback, owner)
     if player is None:
+        return
+
+    if player.cls is None:
+        await callback.answer("Сначала выбери ремесло: /class", show_alert=True)
+        return
+    if await db.load_run(player.tg_id):
+        await callback.answer("Ты уже в подземелье. Напиши /raid, чтобы вернуться.",
+                              show_alert=True)
         return
 
     if not await db.spend_energy(player.tg_id):
@@ -182,7 +225,8 @@ async def start_run(callback: CallbackQuery) -> None:
         return
 
     location = LOCATIONS_BY_KEY[loc_key]
-    state = run_mod.start(location, hp=player.hp_max, rng=random.Random())
+    state = run_mod.start(location, hp=hero_stats(player)[0], rng=random.Random(),
+                          cls=player.cls)
     await db.save_run(player.tg_id, state.dumps())
 
     await callback.answer(
@@ -190,10 +234,11 @@ async def start_run(callback: CallbackQuery) -> None:
         f"{health_line(state, player, location)}"[:ALERT_LIMIT],
         show_alert=True,
     )
-    await callback.message.edit_reply_markup(reply_markup=_moves_keyboard(player.tg_id))
+    await callback.message.edit_reply_markup(reply_markup=_moves_keyboard(player.tg_id, state))
 
 
 @router.callback_query(F.data.startswith("raid:mv:"))
+@per_player
 async def make_move(callback: CallbackQuery) -> None:
     _, _, move_value, owner = callback.data.split(":")
     player = await _guard(callback, owner)
@@ -207,15 +252,60 @@ async def make_move(callback: CallbackQuery) -> None:
 
     state = run_mod.RunState.loads(raw)
     location = LOCATIONS_BY_KEY[state.location]
-    hero = Fighter(name=player.name, hp=state.hp, hp_max=player.hp_max,
-                   atk=player.atk, defense=player.defense)
+    if state.phase != run_mod.PHASE_FIGHT:
+        await callback.answer("Сейчас не бой — выбирай тропу.", show_alert=True)
+        return
 
+    hero = hero_fighter(player, state.hp)
     result = run_mod.fight_round(state, hero, location, Move(move_value), random.Random())
     await _advance_screen(callback, state, player, location,
                           round_alert(result, state, player, location))
 
 
+@router.callback_query(F.data.startswith("raid:sk:"))
+@per_player
+async def use_skill(callback: CallbackQuery) -> None:
+    _, _, owner = callback.data.split(":")
+    player = await _guard(callback, owner)
+    if player is None:
+        return
+
+    raw = await db.load_run(player.tg_id)
+    if raw is None:
+        await callback.answer("Этот поход уже закончился.", show_alert=True)
+        return
+
+    state = run_mod.RunState.loads(raw)
+    if state.phase != run_mod.PHASE_FIGHT:
+        await callback.answer("Сейчас не бой — выбирай тропу.", show_alert=True)
+        return
+    if not run_mod.can_use_skill(state):
+        await callback.answer("Зарядов не осталось.", show_alert=True)
+        return
+
+    location = LOCATIONS_BY_KEY[state.location]
+    rng = random.Random()
+
+    if CLASSES[state.cls].skill == SKILL_SCOUT:
+        if state.monster_move:
+            await callback.answer("Ты уже подсмотрел этот раунд.", show_alert=True)
+            return
+        their = run_mod.scout(state, location, rng)
+        await _advance_screen(
+            callback, state, player, location,
+            (f"👁 {state.monster_name} готовит: {LABELS[their]}.\n\n"
+             f"{health_line(state, player, location)}")[:ALERT_LIMIT],
+        )
+        return
+
+    hero = hero_fighter(player, state.hp)
+    result = run_mod.fight_round(state, hero, location, None, rng, use_skill=True)
+    await _advance_screen(callback, state, player, location,
+                          round_alert(result, state, player, location))
+
+
 @router.callback_query(F.data.startswith("raid:path:"))
+@per_player
 async def choose_path(callback: CallbackQuery) -> None:
     _, _, side, owner = callback.data.split(":")
     player = await _guard(callback, owner)
@@ -228,6 +318,11 @@ async def choose_path(callback: CallbackQuery) -> None:
         return
 
     state = run_mod.RunState.loads(raw)
+    if state.phase != run_mod.PHASE_FORK:
+        # Старые кнопки развилки: без проверки ими можно было бы уйти от живой твари.
+        await callback.answer("Тварь не отпустит — сначала бой.", show_alert=True)
+        return
+
     location = LOCATIONS_BY_KEY[state.location]
     rng = random.Random()
 

@@ -7,14 +7,19 @@ from aiogram.enums import ParseMode
 from aiogram.types import BotCommand
 
 from bot import config, db
-# RPG (походы, дуэли, профиль) выключена: код лежит в bot/game и
-# bot/handlers/{rpg,raid,duel}.py, вернуть — подключить роутеры обратно.
-from bot.handlers import ai_chat, coins, common, crocodile, dice, fun, quiz, roulette, wordle
+from bot.handlers import (
+    ai_chat, coins, common, crocodile, dice, duel, fun, quiz, raid, roulette, rpg, wordle,
+)
 from bot.handlers import profanity
 from bot.middlewares import RegisterPlayer
 from bot.services import scheduler
 
 COMMANDS = [
+    BotCommand(command="class", description="RPG: выбрать класс"),
+    BotCommand(command="raid", description="RPG: поход в подземелье"),
+    BotCommand(command="profile", description="RPG: мой персонаж"),
+    BotCommand(command="duel", description="RPG: дуэль (ответом на сообщение)"),
+    BotCommand(command="rpg", description="RPG: как играть"),
     BotCommand(command="hero", description="Герой дня"),
     BotCommand(command="clown", description="Клоун дня"),
     BotCommand(command="who", description="Кто сегодня… (напиши вопрос после команды)"),
@@ -55,7 +60,8 @@ async def main() -> None:
     dp.message.outer_middleware(profanity.MatGuard())
     # Крокодил последним: он ловит обычные сообщения с догадками.
     dp.include_routers(common.router, coins.router, fun.router, dice.router,
-                       roulette.router, quiz.router, wordle.router)
+                       roulette.router, quiz.router, wordle.router,
+                       rpg.router, raid.router, duel.router)
     # Собеседник — до крокодила: обращение к боту не должно уйти в догадки.
     if config.GEMINI_API_KEY:
         dp.message.outer_middleware(ai_chat.ChatLog())

@@ -50,7 +50,7 @@ JOKE_MENTION_CHANCE = float(os.getenv("JOKE_MENTION_CHANCE", "0.3"))
 START_HP = 10
 START_ATK = 5
 START_DEF = 0
-MAX_ENERGY = 2
+MAX_ENERGY = 3
 
 # Прибавка за уровень. Защита растёт вдвое медленнее: она делит входящий урон
 # и в связке с HP работает мультипликативно, иначе перс быстро становится

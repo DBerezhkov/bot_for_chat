@@ -220,7 +220,8 @@ async def test_reminder_sends_text(clean_db, reminder):
     assert chat_id == config.CLAN_CHAT_ID
     assert reminder.when.lower() in text.lower()
     assert "{" not in text
-    assert text[0].isupper(), text
+    first_letter = next(ch for ch in text if ch.isalpha())  # фраза может начаться с «
+    assert first_letter.isupper(), text
 
 
 async def test_reminder_capitalizes_when_after_sentence_end(clean_db, monkeypatch):

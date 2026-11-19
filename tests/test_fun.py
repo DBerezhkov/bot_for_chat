@@ -148,17 +148,19 @@ async def test_hero_announces_once(clean_db, monkeypatch):
     first = FakeMessage()
     await fun.hero(first)
     assert len(first.sent) == 4  # три строки подводки и итог
-    assert "Герой дня" in first.sent[-1]
+    # Итог склоняется: «Герой дня», «Героя дня», «Герою дня».
+    assert "Геро" in first.sent[-1] and "дня" in first.sent[-1]
 
     again = FakeMessage()
     await fun.hero(again)
     assert len(again.sent) == 1 and "уже выбран" in again.sent[0]
 
 
-def test_main_wires_only_fun_routers():
+def test_main_wires_fun_and_rpg_routers():
     from bot import main
     commands = {c.command for c in main.COMMANDS}
-    assert {"raid", "duel", "profile", "pair"}.isdisjoint(commands), "RPG и пара дня выключены"
+    assert "pair" not in commands, "пара дня выключена"
+    assert {"rpg", "class", "raid", "profile", "duel"} <= commands, "RPG включена"
     assert {"hero", "quiz", "roulette", "roll", "slots", "top",
             "croc", "wordle", "w", "daily", "balance", "give", "rich"} <= commands
 

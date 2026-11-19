@@ -38,7 +38,7 @@ def _hits(hp: int, atk: int, defense: int) -> int:
     return math.ceil(hp / (atk * DEFENSE_SCALE / (DEFENSE_SCALE + defense)))
 
 
-def win_chance(level: int, monster) -> float:
+def win_chance(level: int, monster, cls: str | None = None) -> float:
     """Шанс игрока такого уровня одолеть тварь, если жать наугад.
 
     Исход раунда от характеристик не зависит вовсе — это монетка. Зависит,
@@ -46,6 +46,9 @@ def win_chance(level: int, monster) -> float:
     сложности локаций.
     """
     hp, atk, defense = stats_at(level)
+    if cls:
+        from bot.game.classes import CLASSES
+        hp, atk, defense = CLASSES[cls].apply(hp, atk, defense)
     mine = _hits(monster.hp, atk, monster.defense)
     theirs = _hits(hp, monster.atk, defense)
     return sum(comb(mine - 1 + k, k) * 0.5 ** (mine + k) for k in range(theirs))
