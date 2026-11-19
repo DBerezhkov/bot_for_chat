@@ -10,6 +10,7 @@ from bot import config, db
 # RPG (походы, дуэли, профиль) выключена: код лежит в bot/game и
 # bot/handlers/{rpg,raid,duel}.py, вернуть — подключить роутеры обратно.
 from bot.handlers import ai_chat, coins, common, crocodile, dice, fun, quiz, roulette, wordle
+from bot.handlers import profanity
 from bot.middlewares import RegisterPlayer
 from bot.services import scheduler
 
@@ -50,6 +51,8 @@ async def main() -> None:
     dp = Dispatcher()
     # outer: срабатывает на каждое сообщение, а не только на пойманные обработчиком.
     dp.message.outer_middleware(RegisterPlayer())
+    # Цензор: одёргивает за мат и пропускает сообщение дальше.
+    dp.message.outer_middleware(profanity.MatGuard())
     # Крокодил последним: он ловит обычные сообщения с догадками.
     dp.include_routers(common.router, coins.router, fun.router, dice.router,
                        roulette.router, quiz.router, wordle.router)
