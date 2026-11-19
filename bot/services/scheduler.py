@@ -66,8 +66,8 @@ async def pin_for(bot: Bot, scheduler: AsyncIOScheduler, text: str,
                   ttl: timedelta) -> None:
     """Пишет в клан-чат, закрепляет с уведомлением всем и через ttl открепляет.
 
-    Без права «Закреплять сообщения» закреп не выйдет — тогда всех будят
-    тегами отдельным ответом (правка сообщения уведомлений не шлёт).
+    Без права «Закреплять сообщения» закреп не выйдет — сообщение остаётся
+    обычным, без тегов: тегать всех в последнем напоминании не просили.
     """
     chat_id = config.CLAN_CHAT_ID
     message = await bot.send_message(chat_id, text)
@@ -76,8 +76,6 @@ async def pin_for(bot: Bot, scheduler: AsyncIOScheduler, text: str,
                                    disable_notification=False)
     except TelegramAPIError as e:
         log.warning("Не удалось закрепить напоминание (нет прав?): %s", e)
-        if mentions := await _mention_all():
-            await message.reply(mentions)
         return
 
     unpin_at = datetime.now(config.TZ) + ttl

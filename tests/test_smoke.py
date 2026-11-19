@@ -270,14 +270,15 @@ async def test_pinned_reminder_has_no_tags_and_unpins_later(clean_db):
     assert await db.pending_unpins() == []
 
 
-async def test_pin_without_rights_falls_back_to_tags(clean_db):
+async def test_pin_without_rights_does_not_tag(clean_db):
     await db.upsert_player(1, "Дмитрий", "dmitry")
     reminder = next(r for r in REMINDERS if r.pin_minutes)
     bot = FakeBot(can_pin=False)
 
     await scheduler._send_reminder(bot, AsyncIOScheduler(), reminder.job_id)
 
-    assert bot.replies == [(1, "@dmitry")]
+    assert len(bot.sent) == 1 and "@dmitry" not in bot.sent[0][1]
+    assert bot.replies == []
     assert await db.pending_unpins() == []
 
 
